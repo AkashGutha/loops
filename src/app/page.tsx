@@ -23,7 +23,7 @@ import {
   where,
 } from "firebase/firestore";
 import { getFirebaseAuth, getFirebaseDb } from "../lib/firebaseClient";
-import { Loop, LoopStatus, LoopPriority } from "../types";
+import { Loop, LoopStatus, LoopPriority, FILTERS, FilterKey } from "../types";
 
 const staleWindowMs = 48 * 60 * 60 * 1000;
 
@@ -36,7 +36,7 @@ export default function Home() {
   const [user, setUser] = useState<User | null>(null);
   const [loops, setLoops] = useState<Loop[]>([]);
   const [loadingLoops, setLoadingLoops] = useState(true);
-  const [filter, setFilter] = useState<LoopStatus[]>([]);
+  const [filter, setFilter] = useState<FilterKey[]>([]);
   const [sortBy, setSortBy] = useState<SortOption>("updated");
   const [error, setError] = useState<string | null>(null);
 
@@ -89,10 +89,29 @@ export default function Home() {
     return () => unsub();
   }, [db, user]);
 
+  const isStale = (loop: Loop) => {
+    const stale = loop.staleAt?.toMillis();
+    return typeof stale === "number" && stale < Date.now();
+  };
+
   const filteredLoops = useMemo(() => {
     let result = loops;
+    
     if (filter.length > 0) {
-      result = loops.filter((loop) => filter.includes(loop.status));
+      result = loops.filter((loop) => {
+        return filter.some((f) => {
+          const filterConfig = FILTERS[f];
+          
+          if (f === "all") return true;
+          if (f === "act-on") return loop.status === "act_on";
+          if (f === "due-soon") {
+            const stale = loop.staleAt?.toMillis();
+            return typeof stale === "number" && stale - Date.now() < 12 * 60 * 60 * 1000;
+          }
+          
+          return filterConfig.statuses?.includes(loop.status) ?? false;
+        });
+      });
     }
 
     const priorityValue = (p: string) => {
@@ -117,58 +136,27 @@ export default function Home() {
     return result;
   }, [filter, loops, sortBy]);
 
-  const isStale = (loop: Loop) => {
-    const stale = loop.staleAt?.toMillis();
-    return typeof stale === "number" && stale < Date.now();
-  };
-
   const stats = useMemo(() => {
-    const active = loops.filter((loop) => loop.status === "active").length;
-    const stalled = loops.filter((loop) => loop.status === "stalled" || isStale(loop)).length;
-    const closed = loops.filter((loop) => loop.status === "closed").length;
+    const byStatus = loops.reduce((acc, loop) => {
+       acc[loop.status] = (acc[loop.status] || 0) + 1;
+       return acc;
+    }, {} as Record<string, number>);
+
     const staleSoon = loops.filter((loop) => {
+      if (loop.status === "closed") return false;
       const stale = loop.staleAt?.toMillis();
       return typeof stale === "number" && stale - Date.now() < 12 * 60 * 60 * 1000;
     }).length;
+
     return {
       total: loops.length,
-      active,
-      stalled,
-      closed,
+      active: byStatus["active"] || 0,
+      stalled: byStatus["stalled"] || 0,
+      closed: byStatus["closed"] || 0,
+      actOn: byStatus["act_on"] || 0,
       staleSoon,
     };
   }, [loops]);
-
-  const statCards = [
-    {
-      label: "Total loops",
-      value: stats.total,
-      hint: "All time",
-      icon: Activity,
-      tone: "from-slate-100 via-white to-slate-50 dark:from-slate-800 dark:via-slate-900 dark:to-slate-950",
-    },
-    {
-      label: "Active",
-      value: stats.active,
-      hint: "Progressing",
-      icon: CheckCircle2,
-      tone: "from-emerald-200/50 via-teal-200/40 to-emerald-300/40 dark:from-emerald-500/18 dark:via-teal-500/15 dark:to-emerald-600/18",
-    },
-    {
-      label: "Due soon",
-      value: stats.staleSoon,
-      hint: "Next 12h",
-      icon: Clock3,
-      tone: "from-amber-200/60 via-orange-200/50 to-amber-300/50 dark:from-amber-400/20 dark:via-orange-400/18 dark:to-amber-600/18",
-    },
-    {
-      label: "Stalled",
-      value: stats.stalled,
-      hint: "Needs attention",
-      icon: AlertTriangle,
-      tone: "from-rose-200/50 via-amber-200/40 to-red-200/50 dark:from-rose-500/18 dark:via-amber-500/12 dark:to-red-500/18",
-    },
-  ];
 
   const updateLoop = async (loopId: string, payload: Partial<Omit<Loop, "id" | "ownerId">>) => {
     const ref = doc(db, "loops", loopId);
@@ -203,8 +191,13 @@ export default function Home() {
   };
 
   const statusPillClass = (status: LoopStatus, stalled: boolean) => {
-    if (status === "closed") return "bg-emerald-100/50 text-emerald-700 ring-1 ring-emerald-600/20 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-400/20";
+    // Stalled has highest info priority for colors, but "act_on" is a specific status.
+    // If it's literally status="stalled" or forced stale, use amber.
     if (status === "stalled" || stalled) return "bg-amber-100/50 text-amber-700 ring-1 ring-amber-600/20 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-400/20";
+    if (status === "closed") return "bg-emerald-100/50 text-emerald-700 ring-1 ring-emerald-600/20 dark:bg-emerald-500/10 dark:text-emerald-400 dark:ring-emerald-400/20";
+    if (status === "act_on") return "bg-amber-100/50 text-amber-700 ring-1 ring-amber-600/20 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-400/20";
+    if (status === "new") return "bg-slate-100/50 text-slate-700 ring-1 ring-slate-600/20 dark:bg-slate-500/10 dark:text-slate-400 dark:ring-slate-400/20";
+    // active, etc.
     return "bg-sky-100/50 text-sky-700 ring-1 ring-sky-600/20 dark:bg-sky-500/10 dark:text-sky-400 dark:ring-sky-400/20";
   };
 
@@ -241,9 +234,9 @@ export default function Home() {
                   aria-label={`Status ${stalled ? "stalled" : loop.status}`}
                 >
                   <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
-                  {stalled ? "Stalled" : loop.status === "active" ? "Active" : "Closed"}
+                  {stalled ? "Stalled" : loop.status === "act_on" ? "Act on" : loop.status === "new" ? "New" : loop.status === "active" ? "Active" : loop.status === "closed" ? "Closed" : loop.status}
                 </span>
-                {stalled && (
+                {loop.status === "act_on" && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-semibold text-amber-800 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-400/30">
                     <AlertTriangle className="h-3.5 w-3.5" aria-hidden />
                     Needs attention
@@ -307,10 +300,13 @@ export default function Home() {
   );
 
   const statusFilters = [
-    { key: "all", label: "All", count: stats.total },
-    { key: "active", label: "Active", count: stats.active },
-    { key: "stalled", label: "Stalled", count: stats.stalled },
-    { key: "closed", label: "Closed", count: stats.closed },
+    { key: "all" as FilterKey, label: FILTERS.all.label, count: stats.total },
+    { key: "act-on" as FilterKey, label: FILTERS["act-on"].label, count: stats.actOn },
+    { key: "new" as FilterKey, label: FILTERS.new.label, count: loops.filter(l => l.status === "new").length },
+    { key: "active" as FilterKey, label: FILTERS.active.label, count: stats.active },
+    { key: "due-soon" as FilterKey, label: FILTERS["due-soon"].label, count: stats.staleSoon },
+    { key: "stalled" as FilterKey, label: FILTERS.stalled.label, count: stats.stalled },
+    { key: "closed" as FilterKey, label: FILTERS.closed.label, count: stats.closed },
   ];
 
   if (!user) {
@@ -321,7 +317,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-slate-100 dark:bg-slate-950">
-      <div className="mx-auto max-w-6xl space-y-6 px-4 pb-12 pt-6 sm:px-6 lg:px-0">
+      <div className="mx-auto max-w-6xl space-y-6 px-4 pb-12 pt-8 sm:px-6 lg:px-8">
       <section className="rounded-2xl border border-slate-200 bg-gradient-to-r from-slate-900 via-slate-900 to-slate-800 px-6 py-6 text-white shadow-sm ring-1 ring-white/10 dark:border-slate-800 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 dark:ring-white/5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="space-y-2">
@@ -339,38 +335,21 @@ export default function Home() {
             </Link>
             <button
               type="button"
-              onClick={() => setFilter(["stalled"])}
-              className="inline-flex items-center gap-2 rounded-md border border-white/30 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-white/10"
+              onClick={() => setFilter(["act-on"])}
+              className="inline-flex items-center gap-2 rounded-md border border-white/40 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-white shadow-sm transition hover:bg-white/10"
             >
-              Focus stalled
+              Focus on act on
             </button>
           </div>
         </div>
       </section>
 
-      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {statCards.map(({ label, value, hint, icon: Icon, tone }) => (
-          <div
-            key={label}
-            className={`relative overflow-hidden flex items-center justify-between rounded-xl border border-slate-200 bg-white/95 px-4 py-3 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-slate-800 dark:bg-slate-900/90 ${tone ? `bg-gradient-to-br ${tone}` : ""}`}
-          >
-            <div className="absolute right-2 top-2 h-10 w-10 rounded-full bg-white/25 blur-2xl dark:bg-white/5" aria-hidden />
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{label}</p>
-              <p className="mt-1 text-2xl font-semibold text-slate-900 dark:text-white">{value}</p>
-              <p className="text-xs text-slate-500 dark:text-slate-400">{hint}</p>
-            </div>
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-50 text-slate-700 ring-1 ring-slate-200 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-700">
-              <Icon className="h-4.5 w-4.5" aria-hidden />
-            </div>
-          </div>
-        ))}
-      </section>
-
       <section className="rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-4 py-3 sm:px-6 dark:border-slate-800">
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-200 px-4 py-2.5 sm:px-6 dark:border-slate-800">
           {statusFilters.map(({ key, label, count }) => {
-            const isActive = key === "all" ? filter.length === 0 : filter.includes(key as LoopStatus);
+            const isActive = 
+              key === "all" ? filter.length === 0 :
+              filter.includes(key);
 
             return (
               <button
@@ -379,23 +358,20 @@ export default function Home() {
                 onClick={() => {
                   if (key === "all") {
                     setFilter([]);
-                    return;
-                  }
-
-                  if (isActive) {
+                  } else if (isActive) {
                     setFilter(filter.filter((f) => f !== key));
                   } else {
-                    setFilter([...filter, key as LoopStatus]);
+                    setFilter([...filter, key]);
                   }
                 }}
-                className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-semibold ring-1 transition ${
+                className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-semibold ring-1 transition ${
                   isActive
                     ? "bg-slate-900 text-white ring-slate-900 dark:bg-white dark:text-slate-900 dark:ring-white"
                     : "bg-white text-slate-700 ring-slate-200 hover:bg-slate-50 dark:bg-slate-900 dark:text-slate-200 dark:ring-slate-700 dark:hover:bg-slate-800"
                 }`}
               >
                 <span>{label}</span>
-                <span className={`inline-flex min-w-6 items-center justify-center rounded-full px-2 text-[11px] font-semibold ${isActive ? "bg-white/15 text-white" : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200"}`}>
+                <span className={`inline-flex min-w-5 items-center justify-center rounded-full px-1.5 text-[10px] font-semibold ${isActive ? "bg-white/15 text-white" : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200"}`}>
                   {count}
                 </span>
               </button>
@@ -405,10 +381,10 @@ export default function Home() {
           <button
             type="button"
             onClick={() => setSortBy((prev) => (prev === "updated" ? "priority" : "updated"))}
-            className="ml-auto inline-flex items-center gap-2 rounded-md bg-slate-50 px-3 py-1.5 text-sm font-semibold text-slate-700 ring-1 ring-slate-200 transition hover:bg-slate-100 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-700 dark:hover:bg-slate-700"
+            className="ml-auto inline-flex items-center gap-1.5 rounded-md bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200 transition hover:bg-slate-100 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-700 dark:hover:bg-slate-700"
           >
-            <ArrowUpDown className="h-4 w-4 text-slate-400" />
-            Sort: {sortBy === "updated" ? "Latest" : "Priority"}
+            <ArrowUpDown className="h-3.5 w-3.5 text-slate-400" />
+            {sortBy === "updated" ? "Latest" : "Priority"}
           </button>
         </div>
 

@@ -4,6 +4,52 @@ export type LoopStatus = "new" | "act_on" | "active" | "stalled" | "closed";
 
 export type LoopPriority = "high" | "medium" | "low";
 
+export type FilterKey = "all" | "act-on" | "active" | "due-soon" | "stalled" | "closed" | "new";
+
+export type Filter = {
+  key: FilterKey;
+  label: string;
+  statuses?: LoopStatus[];
+  isDynamic?: boolean;
+};
+
+export const FILTERS: Record<FilterKey, Filter> = {
+  all: {
+    key: "all",
+    label: "All",
+  },
+  "act-on": {
+    key: "act-on",
+    label: "Act on",
+    isDynamic: true,
+  },
+  new: {
+    key: "new",
+    label: "New",
+    statuses: ["new"],
+  },
+  active: {
+    key: "active",
+    label: "Active",
+    statuses: ["active"],
+  },
+  "due-soon": {
+    key: "due-soon",
+    label: "Due soon",
+    isDynamic: true,
+  },
+  stalled: {
+    key: "stalled",
+    label: "Stalled",
+    statuses: ["stalled"],
+  },
+  closed: {
+    key: "closed",
+    label: "Closed",
+    statuses: ["closed"],
+  },
+};
+
 export type Loop = {
   id: string;
   title: string;

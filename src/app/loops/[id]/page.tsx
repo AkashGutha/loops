@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   addDoc,
@@ -47,6 +47,12 @@ export default function LoopDetailPage() {
   const [updateText, setUpdateText] = useState("");
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showGuideModal, setShowGuideModal] = useState(false);
+
+  // Voice dictation state
+  const recognitionRef = useRef<any>(null);
+  const [listening, setListening] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState<"idle" | "listening" | "processing" | "success" | "error" | "unsupported">("idle");
+  const [voiceStatusText, setVoiceStatusText] = useState("");
 
   useEffect(() => {
     if (!id) return;
@@ -294,7 +300,7 @@ export default function LoopDetailPage() {
   const isStale = (loop.staleAt?.toMillis() ?? 0) < Date.now();
   const stalled = loop.status === "stalled" || isStale;
 
-  const statusOptions: { value: LoopStatus; label: string; icon: JSX.Element }[] = [
+  const statusOptions: { value: LoopStatus; label: string; icon: React.ReactNode }[] = [
     { value: "new", label: "New", icon: <Sparkles className="h-4 w-4" aria-hidden /> },
     { value: "act_on", label: "Act on", icon: <CornerUpRight className="h-4 w-4" aria-hidden /> },
     { value: "active", label: "Active", icon: <CheckCircle2 className="h-4 w-4" aria-hidden /> },
@@ -302,7 +308,7 @@ export default function LoopDetailPage() {
     { value: "closed", label: "Closed", icon: <Ban className="h-4 w-4" aria-hidden /> },
   ];
 
-  const priorityOptions: { value: LoopPriority; label: string; icon: JSX.Element }[] = [
+  const priorityOptions: { value: LoopPriority; label: string; icon: React.ReactNode }[] = [
     { value: "high", label: "High", icon: <Flame className="h-4 w-4" aria-hidden /> },
     { value: "medium", label: "Medium", icon: <SignalMedium className="h-4 w-4" aria-hidden /> },
     { value: "low", label: "Low", icon: <SignalLow className="h-4 w-4" aria-hidden /> },
