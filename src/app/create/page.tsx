@@ -3,9 +3,9 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { addDoc, collection, serverTimestamp, Timestamp } from "firebase/firestore";
-import { Flag } from "lucide-react";
+import { Flag, CheckCircle2, Sparkles, CornerUpRight, PauseCircle, Ban } from "lucide-react";
 import { getFirebaseAuth, getFirebaseDb } from "../../lib/firebaseClient";
-import { LoopPriority } from "../../types";
+import { LoopPriority, LoopStatus } from "../../types";
 import { DictationBlock } from "../../components/DictationBlock";
 
 const staleWindowMs = 48 * 60 * 60 * 1000;
@@ -20,6 +20,7 @@ export default function CreateLoopPage() {
   const [nextStep, setNextStep] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [priority, setPriority] = useState<LoopPriority>("medium");
+  const [status, setStatus] = useState<LoopStatus>("new");
   const [ideaNote, setIdeaNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -90,7 +91,7 @@ export default function CreateLoopPage() {
         title: title.trim(),
         primaryObjective: objective.trim(),
         immediateNextStep: nextStep.trim(),
-        status: "active",
+        status,
         priority,
         ownerId: user.uid,
         createdAt: serverTimestamp(),
@@ -114,19 +115,10 @@ export default function CreateLoopPage() {
         <p className="mt-3 text-lg text-slate-500 dark:text-slate-400">Define the outcome and set a deadline to get started.</p>
       </header>
 
-      <div className="mb-8 space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-semibold text-slate-900 dark:text-white">Intelligent loop creation</p>
-            <p className="text-xs text-slate-500 dark:text-slate-400">Capture an idea by typing or dictating; apply it to prefill fields.</p>
-          </div>
-          <button
-            type="button"
-            onClick={applyNoteToFields}
-            className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-slate-800 active:translate-y-0 dark:bg-white dark:text-slate-900"
-          >
-            Apply to fields
-          </button>
+      <div className="mb-8 space-y-3">
+        <div>
+          <p className="text-sm font-semibold text-slate-900 dark:text-white">Intelligent loop creation</p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">Capture an idea by typing or dictating; apply it to prefill fields.</p>
         </div>
 
         <DictationBlock
@@ -175,7 +167,7 @@ export default function CreateLoopPage() {
             <p className="text-xs text-slate-500 dark:text-slate-400">Be specific about the definition of done.</p>
           </div>
 
-          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-1">
             <div className="grid gap-2">
                <label htmlFor="dueDate" className="text-sm font-semibold text-slate-900 dark:text-slate-100">
                  Due Date
@@ -190,21 +182,21 @@ export default function CreateLoopPage() {
                  disabled={saving}
                />
             </div>
-            
-            <div className="grid gap-2">
-              <label htmlFor="nextStep" className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                First Step (Optional)
-              </label>
-              <input
-                id="nextStep"
-                type="text"
-                className="block w-full rounded-lg border-slate-300 bg-white px-4 py-3 text-slate-900 shadow-sm transition placeholder:text-slate-400 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 disabled:bg-slate-50 disabled:text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-amber-500/40"
-                placeholder="Initial action item..."
-                value={nextStep}
-                onChange={(e) => setNextStep(e.target.value)}
-                disabled={saving}
-              />
-            </div>
+          </div>
+
+          <div className="grid gap-2">
+            <label htmlFor="nextStep" className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+              First Step (Optional)
+            </label>
+            <textarea
+              id="nextStep"
+              rows={3}
+              className="block w-full rounded-lg border-slate-300 bg-white px-4 py-3 text-slate-900 shadow-sm transition placeholder:text-slate-400 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 disabled:bg-slate-50 disabled:text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:focus:ring-amber-500/40"
+              placeholder="Initial action item..."
+              value={nextStep}
+              onChange={(e) => setNextStep(e.target.value)}
+              disabled={saving}
+            />
           </div>
 
           <div>
@@ -233,6 +225,44 @@ export default function CreateLoopPage() {
                     fill={priority === p ? "currentColor" : "none"}
                   />
                   <span className="capitalize">{p}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="text-sm font-semibold text-slate-900 dark:text-slate-100 block mb-2">Status</label>
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+              {(
+                [
+                  { value: "new" as LoopStatus, label: "New", icon: Sparkles, color: "slate" },
+                  { value: "act_on" as LoopStatus, label: "Act on", icon: CornerUpRight, color: "amber" },
+                  { value: "active" as LoopStatus, label: "Active", icon: CheckCircle2, color: "blue" },
+                  { value: "stalled" as LoopStatus, label: "Stalled", icon: PauseCircle, color: "yellow" },
+                  { value: "closed" as LoopStatus, label: "Closed", icon: Ban, color: "emerald" },
+                ] as const
+              ).map(({ value, label, icon: Icon, color }) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setStatus(value)}
+                  disabled={saving}
+                  className={`flex flex-col items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg border text-xs font-semibold transition ${
+                    status === value
+                      ? color === "slate"
+                        ? "border-slate-500 bg-slate-100 text-slate-800 dark:border-slate-500 dark:bg-slate-700 dark:text-white"
+                        : color === "amber"
+                        ? "border-amber-500 bg-amber-100 text-amber-800 dark:border-amber-500 dark:bg-amber-500/20 dark:text-amber-200"
+                        : color === "blue"
+                        ? "border-blue-500 bg-blue-100 text-blue-800 dark:border-blue-500 dark:bg-blue-500/20 dark:text-blue-200"
+                        : color === "yellow"
+                        ? "border-yellow-500 bg-yellow-100 text-yellow-800 dark:border-yellow-500 dark:bg-yellow-500/20 dark:text-yellow-200"
+                        : "border-emerald-500 bg-emerald-100 text-emerald-800 dark:border-emerald-500 dark:bg-emerald-500/20 dark:text-emerald-200"
+                      : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                  }`}
+                >
+                  <Icon className="w-4 h-4" />
+                  <span>{label}</span>
                 </button>
               ))}
             </div>
