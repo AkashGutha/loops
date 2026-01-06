@@ -1,0 +1,59 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function uid() {
+      return request.auth.uid;
+    }
+
+    function loopPath(loopId) {
+      return /databases/$(database)/documents/loops/$(loopId);
+    }
+
+    // Loops: owned per user
+    match /loops/{loopId} {
+      allow create: if isSignedIn() && uid() == request.resource.data.ownerId;
+      allow read: if isSignedIn() && (resource == null || uid() == resource.data.ownerId);
+      // Added: request.resource.data.ownerId == uid() to prevent changing owner
+      allow update: if isSignedIn() && uid() == resource.data.ownerId && request.resource.data.ownerId == uid();
+      allow delete: if isSignedIn() && uid() == resource.data.ownerId;
+    }
+
+    // Loop updates (thread) scoped under each loop
+    match /loops/{loopId}/updates/{updateId} {
+      allow read: if isSignedIn()
+        && exists(loopPath(loopId))
+        && get(loopPath(loopId)).data.ownerId == uid();
+      
+      // Split create to enforce authorId check
+      allow create: if isSignedIn()
+        && exists(loopPath(loopId))
+        && get(loopPath(loopId)).data.ownerId == uid()
+        && request.resource.data.authorId == uid();
+
+      allow update, delete: if false;
+    }
+
+    // Events: append-only, must belong to same owner as loop
+    match /events/{eventId} {
+      allow create: if isSignedIn()
+        && request.resource.data.ownerId == uid()
+        && exists(loopPath(request.resource.data.loopId))
+        && get(loopPath(request.resource.data.loopId)).data.ownerId == uid();
+
+      allow read: if isSignedIn() && uid() == resource.data.ownerId;
+      allow update, delete: if false;
+    }
+
+    // Profiles: per-user document keyed by uid
+    match /profiles/{userId} {
+      allow read: if isSignedIn() && uid() == userId;
+      allow create, update: if isSignedIn() && uid() == userId;
+      allow delete: if false;
+    }
+  }
+}
