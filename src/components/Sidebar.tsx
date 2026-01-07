@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronLeft, ChevronRight, LayoutDashboard, PlusCircle, LogOut, UserRound } from "lucide-react";
+import { ChevronLeft, ChevronRight, LayoutDashboard, PlusCircle, LogOut, UserRound, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ThemeSwitcher } from "./ThemeSwitcher";
@@ -17,6 +17,7 @@ export function Sidebar({ onSignOut, user, collapsed, onToggleCollapse }: Sideba
 
   const links = [
     { href: "/", label: "My Loops", icon: LayoutDashboard },
+    { href: "/follow-up-stream", label: "Follow Up", icon: Sparkles },
     { href: "/create", label: "Create Loop", icon: PlusCircle },
   ];
 
