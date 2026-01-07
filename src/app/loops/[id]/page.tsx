@@ -7,6 +7,7 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDoc,
   onSnapshot,
   orderBy,
   query,
@@ -30,6 +31,7 @@ import {
 import { getFirebaseAuth, getFirebaseDb } from "../../../lib/firebaseClient";
 import { Loop, LoopStatus, LoopUpdate, LoopPriority } from "../../../types";
 import { DictationBlock } from "../../../components/DictationBlock";
+import { decryptText, encryptText, getOrCreateUserKey } from "../../../lib/e2ee";
 
 const staleWindowMs = 48 * 60 * 60 * 1000;
 
@@ -43,10 +45,16 @@ export default function LoopDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editingNextStep, setEditingNextStep] = useState<string | null>(null);
+  const [rawUpdates, setRawUpdates] = useState<LoopUpdate[]>([]);
   const [updates, setUpdates] = useState<LoopUpdate[]>([]);
   const [updateText, setUpdateText] = useState("");
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [showGuideModal, setShowGuideModal] = useState(false);
+  const [keyReady, setKeyReady] = useState(false);
+  const [keyError, setKeyError] = useState<string | null>(null);
+  const [assigneeName, setAssigneeName] = useState<string | null>(null);
+  const keyRef = useRef<CryptoKey | null>(null);
+  const keyStatus = keyReady ? "ready" : "loading";
 
   // Voice dictation state
   const recognitionRef = useRef<any>(null);
@@ -87,6 +95,63 @@ export default function LoopDetailPage() {
   const isLoopReady = !!loop;
 
   useEffect(() => {
+    const user = auth.currentUser;
+    if (!user) {
+      setKeyReady(false);
+      setKeyError("Sign in to view encrypted updates.");
+      return;
+    }
+
+    getOrCreateUserKey(db, user.uid)
+      .then((key) => {
+        keyRef.current = key;
+        setKeyReady(true);
+        setKeyError(null);
+      })
+      .catch((err) => {
+        console.error(err);
+        setKeyReady(false);
+        setKeyError("Could not fetch encryption key.");
+      });
+  }, [auth, db]);
+
+  useEffect(() => {
+    const fetchAssignee = async () => {
+      if (!loop?.ownerId) {
+        setAssigneeName(null);
+        return;
+      }
+
+      // First, if the owner is the current user, prefer auth displayName/email.
+      if (auth.currentUser && auth.currentUser.uid === loop.ownerId) {
+        const fromAuth = auth.currentUser.displayName || auth.currentUser.email || loop.ownerId;
+        setAssigneeName(fromAuth);
+      }
+
+      try {
+        const profileRef = doc(db, "profiles", loop.ownerId);
+        const snap = await getDoc(profileRef);
+        if (snap.exists()) {
+          const data = snap.data();
+          const display = (data.displayName || data.name || data.email || "").toString().trim();
+          if (display) {
+            setAssigneeName(display);
+            return;
+          }
+        }
+
+        // Fallback: keep existing (possibly set from auth) or ownerId.
+        setAssigneeName((prev) => prev || loop.ownerId);
+      } catch (err) {
+        console.error(err);
+        setAssigneeName((prev) => prev || loop.ownerId);
+      }
+    };
+
+    fetchAssignee();
+  }, [db, loop?.ownerId]);
+
+  useEffect(() => {
     if (!id || !isLoopReady) return;
     const updatesRef = collection(db, "loops", id, "updates");
     const updatesQuery = query(updatesRef, orderBy("createdAt", "desc"));
@@ -97,13 +162,17 @@ export default function LoopDetailPage() {
           const data = docSnap.data();
           return {
             id: docSnap.id,
-            body: data.body ?? "",
+            body: data.body ?? undefined,
+            ciphertext: data.ciphertext ?? null,
+            iv: data.iv ?? null,
+            kdfSalt: data.kdfSalt ?? null,
+            encryptionVersion: data.encryptionVersion ?? null,
             authorId: data.authorId ?? "",
             authorName: data.authorName ?? "",
             createdAt: data.createdAt ?? null,
           } satisfies LoopUpdate;
         });
-        setUpdates(next);
+        setRawUpdates(next);
       },
       (err) => setError(err.message),
     );
@@ -161,9 +230,22 @@ export default function LoopDetailPage() {
     setError(null);
     try {
       const user = auth.currentUser;
+      if (!user) {
+        setError("You must be logged in to post.");
+        return;
+      }
+      if (!keyRef.current) {
+        setError("Encryption key not ready yet. Please wait a moment.");
+        return;
+      }
+      const { ciphertext, iv } = await encryptText(keyRef.current, body);
       const updatesRef = collection(db, "loops", loop.id, "updates");
       await addDoc(updatesRef, {
-        body,
+        body: null,
+        ciphertext,
+        iv,
+        kdfSalt: null,
+        encryptionVersion: 1,
         authorId: user?.uid ?? "anonymous",
         authorName: user?.displayName ?? user?.email ?? "Unknown",
         createdAt: serverTimestamp(),
@@ -293,6 +375,48 @@ export default function LoopDetailPage() {
     if (days === 0) return { label: "Due today", tone: "border-amber-200 text-amber-700 bg-amber-50" };
     return { label: `Due in ${days}d`, tone: "border-sky-200 text-sky-700 bg-sky-50" };
   }, [loop?.dueAt]);
+
+  useEffect(() => {
+    const decryptUpdates = async () => {
+      if (!rawUpdates.length) {
+        setUpdates([]);
+        return;
+      }
+
+      const key = keyRef.current;
+      if (!key) {
+        const masked = rawUpdates.map((item) => {
+          if (item.ciphertext) {
+            return {
+              ...item,
+              body: "Encrypted update — loading key...",
+            };
+          }
+          return { ...item, body: item.body ?? "" };
+        });
+        setUpdates(masked);
+        return;
+      }
+
+      const resolved = await Promise.all(
+        rawUpdates.map(async (item) => {
+          if (item.ciphertext && item.iv) {
+            try {
+              const body = await decryptText(key, item.ciphertext, item.iv);
+              return { ...item, body };
+            } catch (err) {
+              console.error(err);
+              return { ...item, body: "Unable to decrypt with the current passphrase." };
+            }
+          }
+          return { ...item, body: item.body ?? "" };
+        }),
+      );
+      setUpdates(resolved);
+    };
+
+    decryptUpdates();
+  }, [rawUpdates, keyReady, keyStatus]);
 
   if (loading) return <div className="text-slate-500">Loading loop...</div>;
   if (error || !loop) return <div className="text-rose-500">Error: {error}</div>;
@@ -544,7 +668,7 @@ export default function LoopDetailPage() {
           </section>
 
           {/* Updates Section */}
-           <section>
+          <section>
             <div className="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-2 dark:border-slate-800">
               <div className="flex items-center gap-2">
                 <h2 className="text-sm font-semibold text-slate-900 dark:text-white">Updates</h2>
@@ -561,6 +685,12 @@ export default function LoopDetailPage() {
                 Guide
               </button>
             </div>
+
+            {keyError && (
+              <div className="mb-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-200">
+                {keyError}
+              </div>
+            )}
 
             <div className="flex gap-3">
               <div className="h-8 w-8 flex-none rounded-full bg-blue-600 flex items-center justify-center text-white text-xs font-bold ring-2 ring-white dark:ring-slate-900">
@@ -585,6 +715,8 @@ export default function LoopDetailPage() {
                 {updates.map((item) => {
                    const time = item.createdAt ? new Date(item.createdAt.toMillis()).toLocaleString() : "just now";
                    const initials = item.authorName ? item.authorName[0].toUpperCase() : "?";
+                   const authorName = item.authorName || "Unknown";
+                   const content = item.body && item.body.length > 0 ? item.body : "Encrypted update — loading key...";
                    return (
                      <div key={item.id} className="flex gap-4 group">
                         <div className="h-8 w-8 flex-none rounded-full bg-slate-200 flex items-center justify-center text-slate-600 font-bold text-xs dark:bg-slate-800 dark:text-slate-400">
@@ -592,10 +724,10 @@ export default function LoopDetailPage() {
                         </div>
                         <div className="flex-1">
                            <div className="flex items-center gap-2 mb-1">
-                              <span className="text-sm font-semibold text-slate-900 dark:text-white">{item.authorName}</span>
+                          <span className="text-sm font-semibold text-slate-900 dark:text-white">{authorName}</span>
                               <span className="text-xs text-slate-500">{time}</span>
                            </div>
-                           <p className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap">{item.body}</p>
+                             <p className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap">{content}</p>
                            <div className="mt-2 text-xs text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2">
                               <button className="inline-flex items-center gap-1 rounded px-2 py-1 hover:bg-slate-100 dark:hover:bg-slate-800">
                                 <CornerUpRight className="h-3.5 w-3.5" aria-hidden />
@@ -623,7 +755,7 @@ export default function LoopDetailPage() {
               <div className="space-y-4">
                  <div>
                     <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-slate-500">Status</label>
-                    <div className="flex gap-2">
+                    <div className="space-y-2">
                       {statusOptions.map((option) => {
                         const isActive = loop.status === option.value;
                         return (
@@ -632,10 +764,13 @@ export default function LoopDetailPage() {
                             type="button"
                             onClick={() => updateLoop({ status: option.value })}
                             aria-pressed={isActive}
-                            className={`flex flex-1 items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold transition ${statusTone(option.value, isActive)}`}
+                            className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-sm font-semibold transition ${statusTone(option.value, isActive)}`}
                           >
-                            {option.icon}
-                            <span>{option.label}</span>
+                            <span className="inline-flex items-center gap-2">
+                              {option.icon}
+                              {option.label}
+                            </span>
+                            {isActive && <span className="text-[11px] font-bold uppercase tracking-wide text-emerald-600 dark:text-emerald-200">Selected</span>}
                           </button>
                         );
                       })}
@@ -673,13 +808,13 @@ export default function LoopDetailPage() {
               
               <div className="space-y-3">
                  <div className="grid grid-cols-[100px_1fr] items-center gap-2 text-sm">
-                    <span className="text-slate-500">Assignee</span>
-                    <span className="flex items-center gap-2 text-slate-900 dark:text-slate-200">
-                       <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-200 text-[10px] font-bold dark:bg-slate-700">
-                          {loop.ownerId ? loop.ownerId[0].toUpperCase() : "?"}
-                       </span>
-                       <span className="truncate">{loop.ownerId || "Unassigned"}</span>
-                    </span>
+                      <span className="text-slate-500">Assignee</span>
+                      <span className="flex items-center gap-2 text-slate-900 dark:text-slate-200">
+                        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-200 text-[10px] font-bold dark:bg-slate-700">
+                          {(assigneeName || loop.ownerId || "?").charAt(0).toUpperCase()}
+                        </span>
+                        <span className="truncate">{assigneeName || loop.ownerId || "Unassigned"}</span>
+                      </span>
                  </div>
 
                  <div className="grid grid-cols-[100px_1fr] items-center gap-2 text-sm">

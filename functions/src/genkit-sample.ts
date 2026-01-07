@@ -31,6 +31,67 @@ const ai = genkit({
   ],
 });
 
+const loopSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  primaryObjective: z.string(),
+  immediateNextStep: z.string().optional().nullable(),
+  status: z.enum(["new", "act_on", "active", "stalled", "closed"]),
+  priority: z.enum(["high", "medium", "low"]),
+  dueAt: z.string().optional().nullable(),
+  updatedAt: z.string().optional().nullable(),
+  staleAt: z.string().optional().nullable(),
+});
+
+const suggestionSchema = z.object({
+  loopId: z.string(),
+  rationale: z.string(),
+  score: z.number(),
+});
+
+const followUpPrompt = `
+You are a follow-up copilot. Given a list of loops (tasks) return the 3-5 that need action first.
+
+Consider, in order:
+- Priority: high > medium > low.
+- Status: stalled or act_on are urgent; active is mid; new can wait; closed is never returned.
+- Due dates: overdue > due within 3 days > due within 7 days > later/none.
+- Staleness / last update: items untouched for 48h should be lifted.
+- Clarity of next step: if immediateNextStep is missing, call that out.
+
+Respond with a short rationale for each picked loop explaining why it bubbled up.
+`;
+
+const followUpSuggestionsFlow = ai.defineFlow({
+  name: "followUpSuggestionsFlow",
+  inputSchema: z.object({
+    prompt: z.string().default(followUpPrompt),
+    loops: z.array(loopSchema),
+  }),
+  outputSchema: z.object({
+    suggestions: z.array(suggestionSchema),
+  }),
+}, async ({prompt, loops}) => {
+  const {output} = await ai.generate({
+    model: googleAI.model("gemini-2.5-flash"),
+    messages: [
+      {role: "system", content: prompt || followUpPrompt},
+      {
+        role: "user",
+        content: [
+          "Analyze these loops and return the top 3-5 items needing attention.",
+          "Respond as JSON matching the schema.",
+          JSON.stringify(loops, null, 2),
+        ].join("\n\n"),
+      },
+    ],
+    output: z.object({ suggestions: z.array(suggestionSchema) }),
+    config: { temperature: 0.2 },
+  });
+
+  return output;
+});
+
 // Define a simple flow that prompts an LLM to generate menu suggestions.
 const menuSuggestionFlow = ai.defineFlow({
     name: "menuSuggestionFlow",
@@ -60,6 +121,10 @@ const menuSuggestionFlow = ai.defineFlow({
     return (await response).text;
   }
 );
+
+export const followUpSuggestions = onCallGenkit({
+  secrets: [apiKey],
+}, followUpSuggestionsFlow);
 
 export const menuSuggestion = onCallGenkit({
   // Uncomment to enable AppCheck. This can reduce costs by ensuring only your Verified

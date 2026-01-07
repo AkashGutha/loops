@@ -66,7 +66,11 @@ export type Loop = {
 
 export type LoopUpdate = {
   id: string;
-  body: string;
+  body?: string;
+  ciphertext?: string | null;
+  iv?: string | null;
+  kdfSalt?: string | null;
+  encryptionVersion?: number | null;
   authorId: string;
   authorName?: string | null;
   createdAt?: Timestamp | null;
