@@ -1,6 +1,8 @@
 
 import FollowUpStreamClient from "./FollowUpStreamClient";
-import { AI_FOLLOWUP_PROMPT, AiInputLoop, getAiFollowUpSuggestions } from "./actions";
+import { getAiFollowUpSuggestions } from "./actions";
+import { AI_FOLLOWUP_PROMPT, AiInputLoop } from "./shared";
+
 
 const mockLoops: AiInputLoop[] = [
   {

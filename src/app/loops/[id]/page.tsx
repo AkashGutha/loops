@@ -32,6 +32,7 @@ import { getFirebaseAuth, getFirebaseDb } from "../../../lib/firebaseClient";
 import { Loop, LoopStatus, LoopUpdate, LoopPriority } from "../../../types";
 import { DictationBlock } from "../../../components/DictationBlock";
 import { decryptText, encryptText, getOrCreateUserKey } from "../../../lib/e2ee";
+import { generateNextStepSuggestion } from "./actions";
 
 const staleWindowMs = 48 * 60 * 60 * 1000;
 
@@ -61,6 +62,8 @@ export default function LoopDetailPage() {
   const [listening, setListening] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState<"idle" | "listening" | "processing" | "success" | "error" | "unsupported">("idle");
   const [voiceStatusText, setVoiceStatusText] = useState("");
+  const [aiSuggestion, setAiSuggestion] = useState<string | null>(null);
+  const [isGeneratingAiSuggestion, setIsGeneratingAiSuggestion] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -344,17 +347,10 @@ export default function LoopDetailPage() {
     setVoiceStatusText("Mic stopped.");
   };
 
-  const magicSuggest = () => {
-    if (!loop) return;
-    if (updates.length > 0) {
-      setEditingNextStep(suggestedNextStep);
-      return;
+  const applySuggestion = () => {
+    if (aiSuggestion) {
+      setEditingNextStep(aiSuggestion);
     }
-    const seed = loop.primaryObjective || "";
-    const suggestion = seed
-      ? `Draft the next step toward "${seed}" by setting a concrete deliverable and due date.`
-      : "Set a clear deliverable with a date and owner.";
-    setEditingNextStep(suggestion);
   };
 
   const meta = useMemo(() => {
@@ -417,6 +413,35 @@ export default function LoopDetailPage() {
 
     decryptUpdates();
   }, [rawUpdates, keyReady, keyStatus]);
+
+  // Automatic AI suggestion effect
+  useEffect(() => {
+    if (!loop || !updates.length || aiSuggestion || isGeneratingAiSuggestion) return;
+
+    // Check if we have decrypted content to work with
+    const hasDecryptedContent = updates.some(u => u.body && !u.body.startsWith("Encrypted") && !u.body.startsWith("Unable"));
+    if (!hasDecryptedContent) return;
+
+    const generate = async () => {
+      setIsGeneratingAiSuggestion(true);
+      try {
+        const updateBodies = updates
+          .map((u) => u.body)
+          .filter((b): b is string => !!b && !b.startsWith("Encrypted update") && !b.startsWith("Unable to decrypt"));
+        
+        if (updateBodies.length === 0) return;
+
+        const suggestion = await generateNextStepSuggestion(loop.primaryObjective || "", updateBodies);
+        setAiSuggestion(suggestion);
+      } catch (e) {
+        console.error("Failed to generate suggestion", e);
+      } finally {
+        setIsGeneratingAiSuggestion(false);
+      }
+    };
+
+    generate();
+  }, [loop?.id, updates, aiSuggestion, isGeneratingAiSuggestion, loop?.primaryObjective]);
 
   if (loading) return <div className="text-slate-500">Loading loop...</div>;
   if (error || !loop) return <div className="text-rose-500">Error: {error}</div>;
@@ -593,38 +618,52 @@ export default function LoopDetailPage() {
                 <Sparkles className="h-3.5 w-3.5" aria-hidden />
                 Next Step
               </span>
-              {editingNextStep === null ? (
+              {editingNextStep === null && (
                 <button
-                  onClick={() => setEditingNextStep(displayNextStep || suggestedNextStep || "")}
+                  onClick={() => setEditingNextStep(displayNextStep || aiSuggestion || "")}
                   className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
                 >
                   <CheckCircle2 className="h-4 w-4" aria-hidden />
                   Edit
                 </button>
-              ) : (
-                <button
-                  onClick={magicSuggest}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 px-3 py-1.5 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 dark:border-indigo-500/40 dark:text-indigo-100 dark:hover:bg-indigo-500/10"
-                >
-                  <Sparkles className="h-4 w-4" aria-hidden />
-                  Suggest
-                </button>
               )}
             </div>
 
             {editingNextStep === null ? (
-              <div className="space-y-1">
+              <div className="space-y-3">
                 {displayNextStep ? (
                   <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-100">
                     {displayNextStep}
                   </p>
                 ) : (
                   <p className="rounded-md border border-dashed border-slate-200 px-3 py-2 text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
-                    No next step yet. Click edit to set one.
+                    No next step yet.
                   </p>
                 )}
-                {!originalNextStep && updates.length > 0 && suggestedNextStep && (
-                  <p className="text-xs text-indigo-600 dark:text-indigo-300">Suggested: {suggestedNextStep}</p>
+                
+                {/* AI Suggestion Card */}
+                {aiSuggestion && aiSuggestion !== originalNextStep && (
+                  <div className="rounded-md border border-indigo-100 bg-indigo-50 p-3 dark:border-indigo-500/30 dark:bg-indigo-500/10">
+                    <div className="mb-1 flex items-center justify-between">
+                      <span className="text-xs font-semibold text-indigo-700 dark:text-indigo-300">
+                        Suggested based on updates
+                      </span>
+                      <button
+                        onClick={applySuggestion}
+                        className="inline-flex items-center gap-1 rounded bg-indigo-200 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-indigo-800 transition hover:bg-indigo-300 dark:bg-indigo-500/40 dark:text-indigo-100 dark:hover:bg-indigo-500/60"
+                      >
+                        Accept
+                      </button>
+                    </div>
+                    <p className="text-sm text-indigo-900 dark:text-indigo-100">{aiSuggestion}</p>
+                  </div>
+                )}
+                
+                {isGeneratingAiSuggestion && !aiSuggestion && (
+                   <div className="flex items-center gap-2 text-xs text-slate-500 animate-pulse">
+                      <Sparkles className="h-3 w-3" />
+                      Generating suggestion...
+                   </div>
                 )}
               </div>
             ) : (

@@ -1,45 +1,32 @@
-import { getFunctions, httpsCallable } from "firebase/functions";
-import { getFirebaseApp } from "../../lib/firebaseClient";
-import { LoopPriority, LoopStatus } from "../../types";
+"use server";
 
-export type AiInputLoop = {
-  id: string;
-  title: string;
-  primaryObjective: string;
-  immediateNextStep?: string;
-  status: LoopStatus;
-  priority: LoopPriority;
-  dueAt?: string | null;
-  updatedAt?: string | null;
-  staleAt?: string | null;
-};
+import { genkit, z } from "genkit";
+import { googleAI } from "@genkit-ai/google-genai";
+import { AiInputLoop, AiSuggestion, AI_FOLLOWUP_PROMPT } from "./shared";
 
-export type AiSuggestion = {
-  loopId: string;
-  rationale: string;
-  score: number;
-};
+const ai = genkit({
+  plugins: [googleAI({apiKey: process.env.GEMINI_API_KEY || ""})],
+});
 
-export const AI_FOLLOWUP_PROMPT = `
-You are a follow-up copilot. Given a list of loops (tasks) return the 3-5 that need action first.
+const SuggestionSchema = z.object({
+  loopId: z.string(),
+  rationale: z.string(),
+  score: z.number(),
+});
 
-Consider, in order:
-- Priority: high > medium > low.
-- Status: stalled or act_on are urgent; active is mid; new can wait; closed is never returned.
-- Due dates: overdue > due within 3 days > due within 7 days > later/none.
-- Staleness / last update: items untouched for 48h should be lifted.
-- Clarity of next step: if immediateNextStep is missing, call that out.
-
-Respond with a short rationale for each picked loop explaining why it bubbled up.
-`;
+const OutputSchema = z.object({
+  suggestions: z.array(SuggestionSchema),
+});
 
 export async function getAiFollowUpSuggestions(loops: AiInputLoop[]): Promise<AiSuggestion[]> {
-  const functions = getFunctions(getFirebaseApp());
-  const callable = httpsCallable<
-    { prompt: string; loops: AiInputLoop[] },
-    { suggestions?: AiSuggestion[] }
-  >(functions, "followUpSuggestions");
+  const { output } = await ai.generate({
+    model: googleAI.model("gemini-3-flash-preview"),
+    prompt: `${AI_FOLLOWUP_PROMPT.trim()}\n\nHere are the loops:\n${JSON.stringify(loops)}`,
+    config: {
+      apiKey: process.env.GEMINI_API_KEY || "",
+    },
+    output: { schema: OutputSchema },
+  });
 
-  const result = await callable({ prompt: AI_FOLLOWUP_PROMPT.trim(), loops });
-  return result.data?.suggestions ?? [];
+  return output?.suggestions ?? [];
 }
