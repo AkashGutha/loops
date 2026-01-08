@@ -12,7 +12,7 @@ import {onRequest} from "firebase-functions/https";
 import * as logger from "firebase-functions/logger";
 
 // Export Genkit-powered callables
-export * from "./genkit-sample";
+export * from "./follow-up-stream-analyzer";
 
 // Start writing functions
 // https://firebase.google.com/docs/functions/typescript
